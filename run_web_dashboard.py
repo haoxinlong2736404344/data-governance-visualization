@@ -6,6 +6,7 @@
 
 import sys
 import os
+import json
 
 sys.path.insert(0, os.path.dirname(__file__))
 
@@ -17,6 +18,22 @@ from src.data_governance.kpi import GovernanceKPI
 from src.visualization.charts import ChartGenerator
 from src.visualization.governance_flow import GovernanceFlow
 from src.visualization.web_dashboard import WebDashboard
+
+
+def load_static_reports():
+    """加载 main.py 生成的静态报告，用于 Web 页整合展示"""
+    reports = {}
+    file_map = {
+        'quality_report.json': 'reports/quality_report.json',
+        'kpi_report.json': 'reports/kpi_report.json',
+        'metadata.json': 'reports/metadata.json',
+        'executive_summary.json': 'reports/executive_summary.json',
+    }
+    for name, path in file_map.items():
+        if os.path.exists(path):
+            with open(path, 'r', encoding='utf-8') as f:
+                reports[name] = json.load(f)
+    return reports
 
 
 def main():
@@ -80,7 +97,12 @@ def main():
         print("=" * 70)
 
         dashboard = WebDashboard('DataGovernancePlatform')
-        dashboard.set_data(quality_report, kpi_report, charts, governance_flow)
+        static_reports = load_static_reports()
+        if static_reports:
+            print(f"[OK] 已加载 {len(static_reports)} 份静态报告用于整合展示")
+        else:
+            print("[提示] 未检测到静态报告文件，将仅展示实时结果")
+        dashboard.set_data(quality_report, kpi_report, charts, governance_flow, static_reports=static_reports)
 
         print("\nWeb仪表板启动中...")
         print("访问地址：http://127.0.0.1:5000")
