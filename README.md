@@ -21,6 +21,9 @@
 
 ## 🚀 快速开始
 
+### 0. 准备真实数据（推荐）
+将真实数据文件放入 `data/` 目录（见 `data/README.md`）。程序优先使用包含渠道字段的 Supermarket Sales。
+
 ### 1. 克隆仓库
 ```bash
 git clone https://github.com/haoxinlong2736404344/data-governance-visualization.git
@@ -42,6 +45,8 @@ pip install -r requirements.txt
 ```bash
 python main.py
 ```
+
+> 程序会优先使用真实公开数据；若未检测到数据文件，会自动回退为模拟数据。
 
 ### 5. 查看结果
 打开 `reports/dashboard.html` 查看可视化仪表板
@@ -67,6 +72,8 @@ python main.py
 - **reports/dashboard.html** - 交互式可视化仪表板
 - **reports/quality_report.json** - 数据质量报告
 - **reports/metadata.json** - 元数据和数据字典
+- **reports/kpi_report.json** - 治理KPI指标报告
+- **reports/executive_summary.json** - 管理层摘要（数据概览+治理成效）
 
 ## 📝 使用示例
 

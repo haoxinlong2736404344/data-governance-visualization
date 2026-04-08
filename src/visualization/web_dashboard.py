@@ -312,7 +312,7 @@ class WebDashboard:
     def run(self, host='127.0.0.1', port=5000, debug=False):
         """运行Web仪表板"""
         self.setup_routes()
-        print(f"\n🌐 Web仪表板已启动！")
-        print(f"📍 访问地址：http://{host}:{port}")
-        print(f"⚠️  按 Ctrl+C 停止服务器")
+        print(f"\nWeb仪表板已启动")
+        print(f"访问地址：http://{host}:{port}")
+        print(f"按 Ctrl+C 停止服务器")
         self.app.run(host=host, port=port, debug=debug, use_reloader=False)

@@ -76,8 +76,7 @@ class GovernanceKPI:
         if self.quality_report:
             validity_data = self.quality_report.get('validity_metrics', {})
             if validity_data:
-                # 所有有效数据的列都认为是有效的
-                return 100.0
+                return float(validity_data.get('overall_validity_score', 0.0))
         return 0.0
 
     def calculate_governance_coverage(self):

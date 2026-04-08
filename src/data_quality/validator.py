@@ -71,7 +71,7 @@ class DataQualityValidator:
             dict: 包含有效性统计的字典
         """
         metrics = {}
-        
+
         numeric_cols = self.df.select_dtypes(include=[np.number]).columns
         for col in numeric_cols:
             valid_data = self.df[col].dropna()
@@ -84,6 +84,10 @@ class DataQualityValidator:
                     'std': float(valid_data.std()),
                     'valid_count': int(len(valid_data))
                 }
+
+        rule_checks = self._check_business_validity_rules()
+        metrics['rule_checks'] = rule_checks
+        metrics['overall_validity_score'] = self._calculate_validity_score(rule_checks)
         return metrics
     
     def generate_quality_report(self):
@@ -97,23 +101,34 @@ class DataQualityValidator:
         uniqueness = self.check_uniqueness()
         validity = self.check_validity()
         
-        # 计算总体质量评分
-        all_completeness_scores = [m['completeness'] for m in completeness.values()]
-        overall_completeness = np.mean(all_completeness_scores)
+        # 计算总体质量评分（完整性+唯一性+有效性综合）
+        completeness_score = self._calculate_completeness_score(completeness)
+        uniqueness_score = self._calculate_uniqueness_score()
+        validity_score = validity.get('overall_validity_score', 0.0)
+        overall_quality_score = (
+            completeness_score * 0.5 +
+            uniqueness_score * 0.2 +
+            validity_score * 0.3
+        )
         
         report = {
             'report_time': pd.Timestamp.now().isoformat(),
             'total_records': len(self.df),
-            'overall_quality_score': float(overall_completeness * 100),
+            'overall_quality_score': float(overall_quality_score),
+            'score_breakdown': {
+                'completeness_score': float(completeness_score),
+                'uniqueness_score': float(uniqueness_score),
+                'validity_score': float(validity_score),
+            },
             'completeness_metrics': completeness,
             'uniqueness_metrics': uniqueness,
             'validity_metrics': validity,
-            'issues': self._identify_issues(completeness, uniqueness)
+            'issues': self._identify_issues(completeness, uniqueness, validity)
         }
         
         return report
     
-    def _identify_issues(self, completeness, uniqueness):
+    def _identify_issues(self, completeness, uniqueness, validity):
         """
         识别数据质量问题
         
@@ -145,8 +160,84 @@ class DataQualityValidator:
                     'severity': '中',
                     'description': f'{col}列重复率达{metrics["duplicate_rate"]*100:.2f}%'
                 })
-        
+
+        rule_checks = validity.get('rule_checks', {})
+        for rule_name, rule in rule_checks.items():
+            if rule.get('fail_rate', 0) > 0.02:
+                issues.append({
+                    'column': rule.get('column', '多字段'),
+                    'issue_type': f'有效性异常({rule_name})',
+                    'severity': '中' if rule['fail_rate'] <= 0.1 else '高',
+                    'description': f"{rule.get('description', rule_name)}，失败率{rule['fail_rate']*100:.2f}%"
+                })
+
         return issues
+
+    def _calculate_completeness_score(self, completeness):
+        all_completeness_scores = [m['completeness'] for m in completeness.values()]
+        return float(np.mean(all_completeness_scores) * 100) if all_completeness_scores else 0.0
+
+    def _calculate_uniqueness_score(self):
+        if len(self.df) == 0:
+            return 0.0
+        duplicate_row_rate = self.df.duplicated().mean()
+        return float((1 - duplicate_row_rate) * 100)
+
+    def _check_business_validity_rules(self):
+        checks = {}
+        total = max(len(self.df), 1)
+
+        if 'quantity' in self.df.columns:
+            fail_count = int((pd.to_numeric(self.df['quantity'], errors='coerce') <= 0).sum())
+            checks['quantity_positive'] = {
+                'column': 'quantity',
+                'description': '数量应为正数',
+                'fail_count': fail_count,
+                'fail_rate': float(fail_count / total),
+            }
+        if 'unit_price' in self.df.columns:
+            fail_count = int((pd.to_numeric(self.df['unit_price'], errors='coerce') <= 0).sum())
+            checks['unit_price_positive'] = {
+                'column': 'unit_price',
+                'description': '单价应为正数',
+                'fail_count': fail_count,
+                'fail_rate': float(fail_count / total),
+            }
+        if 'sales_amount' in self.df.columns:
+            fail_count = int((pd.to_numeric(self.df['sales_amount'], errors='coerce') <= 0).sum())
+            checks['sales_amount_positive'] = {
+                'column': 'sales_amount',
+                'description': '销售额应为正数',
+                'fail_count': fail_count,
+                'fail_rate': float(fail_count / total),
+            }
+        if {'quantity', 'unit_price', 'sales_amount'}.issubset(self.df.columns):
+            expected = pd.to_numeric(self.df['quantity'], errors='coerce') * pd.to_numeric(self.df['unit_price'], errors='coerce')
+            actual = pd.to_numeric(self.df['sales_amount'], errors='coerce')
+            fail_count = int((expected.notna() & actual.notna() & ((actual - expected).abs() > 1e-6)).sum())
+            checks['amount_consistency'] = {
+                'column': 'sales_amount',
+                'description': '销售额与数量*单价应一致',
+                'fail_count': fail_count,
+                'fail_rate': float(fail_count / total),
+            }
+        if 'order_date' in self.df.columns:
+            parsed = pd.to_datetime(self.df['order_date'], errors='coerce')
+            fail_count = int(parsed.isna().sum())
+            checks['order_date_valid'] = {
+                'column': 'order_date',
+                'description': '订单日期应可解析',
+                'fail_count': fail_count,
+                'fail_rate': float(fail_count / total),
+            }
+
+        return checks
+
+    def _calculate_validity_score(self, rule_checks):
+        if not rule_checks:
+            return 0.0
+        pass_rates = [1 - v['fail_rate'] for v in rule_checks.values()]
+        return float(np.mean(pass_rates) * 100)
     
     def get_quality_score(self):
         """
@@ -155,6 +246,4 @@ class DataQualityValidator:
         Returns:
             float: 质量评分（0-100）
         """
-        completeness = self.check_completeness()
-        all_completeness_scores = [m['completeness'] for m in completeness.values()]
-        return float(np.mean(all_completeness_scores) * 100)
+        return float(self.generate_quality_report()['overall_quality_score'])

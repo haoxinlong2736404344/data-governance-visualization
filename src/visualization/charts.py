@@ -111,6 +111,12 @@ class ChartGenerator:
             return {'type': 'empty', 'message': '缺少必要列'}
             
         region_sales = dataframe.groupby('region')['sales_amount'].sum().sort_values(ascending=False)
+        if len(region_sales) > 10:
+            top_regions = region_sales.head(10)
+            others_sum = float(region_sales.iloc[10:].sum())
+            if others_sum > 0:
+                top_regions['其他区域'] = others_sum
+            region_sales = top_regions
         
         chart = {
             'type': 'pie',
