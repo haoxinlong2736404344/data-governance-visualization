@@ -6,6 +6,7 @@ Web仪表板模块
 from flask import Flask, jsonify
 import json
 import os
+import re
 from datetime import datetime
 
 
@@ -23,14 +24,27 @@ class WebDashboard:
         self.charts = None
         self.governance_flow = None
         self.static_reports = {}
+        self.business_context = {}
+        self.profile = {}
 
-    def set_data(self, quality_report, kpi_report, charts, governance_flow, static_reports=None):
+    def set_data(
+        self,
+        quality_report,
+        kpi_report,
+        charts,
+        governance_flow,
+        static_reports=None,
+        business_context=None,
+        profile=None
+    ):
         """设置仪表板数据"""
         self.quality_report = quality_report
         self.kpi_report = kpi_report
         self.charts = charts
         self.governance_flow = governance_flow
         self.static_reports = static_reports or {}
+        self.business_context = business_context or {}
+        self.profile = profile or {}
 
     def setup_routes(self):
         """设置Flask路由"""
@@ -70,56 +84,62 @@ class WebDashboard:
         total = max(int(report.get('total_records', 0)), 1)
         alerts = []
 
-        # 完整性告警
-        completeness = report.get('completeness_metrics', {})
-        for col, m in completeness.items():
-            fail_rate = float(m.get('missing_rate', 0))
-            if fail_rate > 0.0:
-                alerts.append(self._make_alert(
-                    field=col,
-                    rule='缺失率阈值',
-                    threshold='<= 2%',
-                    current=f"{fail_rate * 100:.2f}%",
-                    fail_rate=fail_rate,
-                    fail_count=int(m.get('missing_count', 0)),
-                    total_records=total
-                ))
+        # 告警口径统一：按问题清单 issues 逐条生成（与页面问题数保持一致）
+        for issue in report.get('issues', []):
+            field = issue.get('column', '未知字段')
+            issue_type = issue.get('issue_type', '')
+            desc = issue.get('description', '')
 
-        # 唯一性告警
-        uniqueness = report.get('uniqueness_metrics', {})
-        for col, m in uniqueness.items():
-            fail_rate = float(m.get('duplicate_rate', 0))
-            if fail_rate > 0.3:
-                alerts.append(self._make_alert(
-                    field=col,
-                    rule='重复率阈值',
-                    threshold='<= 30%',
-                    current=f"{fail_rate * 100:.2f}%",
-                    fail_rate=fail_rate,
-                    fail_count=int(m.get('duplicate_count', 0)),
-                    total_records=total
-                ))
+            percent_match = re.search(r'(\d+(\.\d+)?)%', desc)
+            fail_rate = (float(percent_match.group(1)) / 100.0) if percent_match else 0.0
+            fail_count = int(round(fail_rate * total)) if fail_rate > 0 else 0
 
-        # 有效性告警
-        validity = report.get('validity_metrics', {})
-        rule_checks = validity.get('rule_checks', {}) if isinstance(validity, dict) else {}
-        for rule_name, rule in rule_checks.items():
-            fail_rate = float(rule.get('fail_rate', 0))
-            if fail_rate > 0.0:
-                alerts.append(self._make_alert(
-                    field=rule.get('column', '多字段'),
-                    rule=rule.get('description', rule_name),
-                    threshold='失败率 <= 2%',
-                    current=f"{fail_rate * 100:.2f}%",
-                    fail_rate=fail_rate,
-                    fail_count=int(rule.get('fail_count', 0)),
-                    total_records=total
-                ))
+            if '缺失' in issue_type:
+                rule = '缺失率阈值'
+                threshold = '<= 2%'
+            elif '重复' in issue_type:
+                rule = '重复率阈值'
+                threshold = '<= 30%'
+            else:
+                rule = issue_type
+                threshold = '失败率 <= 2%'
+
+            # 保留原始严重程度映射，避免状态和问题清单冲突
+            severity = issue.get('severity', '低')
+            if severity == '高':
+                status = '异常'
+                level = '高'
+                color = '#dc2626'
+            elif severity == '中':
+                status = '预警'
+                level = '中'
+                color = '#f59e0b'
+            else:
+                status = '关注'
+                level = '低'
+                color = '#2563eb'
+
+            recent_5m = max(1, int(fail_count * 0.08)) if fail_count > 0 else 0
+            recent_1h = max(1, int(fail_count * 0.6)) if fail_count > 0 else 0
+            alerts.append({
+                'field': field,
+                'rule': rule,
+                'threshold': threshold,
+                'current': f"{fail_rate * 100:.2f}%" if fail_rate else '-',
+                'fail_rate': round(fail_rate, 4),
+                'fail_count': fail_count,
+                'total_records': total,
+                'recent_5m': recent_5m,
+                'recent_1h': recent_1h,
+                'level': level,
+                'status': status,
+                'color': color
+            })
 
         alerts = sorted(alerts, key=lambda x: x['fail_rate'], reverse=True)
         return {
             'checked_at': datetime.now().strftime('%Y-%m-%d %H:%M:%S'),
-            'total_alerts': len(alerts),
+            'total_alerts': len(report.get('issues', [])),
             'threshold_basis': '阈值依据：参考常见数据质量治理实践，缺失/规则失败率 >2% 进入预警，>10% 判定异常；唯一性重复率 >30% 触发重点告警。',
             'window_note': '监控口径说明：页面每5秒轮询刷新；“近5分钟/近1小时”用于模拟实时监控窗口，便于展示告警趋势与处理优先级。',
             'alerts': alerts
@@ -162,6 +182,10 @@ class WebDashboard:
         quality_score = self.quality_report.get('overall_quality_score', 0)
         total_records = self.quality_report.get('total_records', 0)
         issues_count = len(self.quality_report.get('issues', []))
+        audience = self.business_context.get('audience', '数据治理负责人、运营经理、数据分析师')
+        problem = self.business_context.get('problem', '解决交易数据缺失/重复导致的报表不可信问题，并量化治理成效')
+        data_source = self.business_context.get('data_source', '公开数据集')
+        timeliness_note = self.business_context.get('timeliness_note', '当前为公开历史样例数据，系统支持替换为最新业务数据')
 
         html = f"""
         <!DOCTYPE html>
@@ -172,60 +196,62 @@ class WebDashboard:
             <title>数据治理Web仪表板</title>
             <script src="https://cdn.jsdelivr.net/npm/echarts@5/dist/echarts.min.js"></script>
             <style>
-                * {{ margin: 0; padding: 0; }}
-                body {{ font-family: 'Microsoft YaHei', Arial; background: #f5f5f5; }}
+                * {{ margin: 0; padding: 0; box-sizing: border-box; }}
+                body {{ font-family: 'Microsoft YaHei', Arial; background: #f3f6fb; color: #1f2937; line-height: 1.5; }}
                 
                 .header {{ 
-                    background: linear-gradient(135deg, #667eea 0%, #764ba2 100%); 
+                    background: linear-gradient(135deg, #5b6ee1 0%, #7a52b3 100%);
                     color: white; 
-                    padding: 40px; 
+                    padding: 34px 24px;
                     text-align: center; 
+                    box-shadow: 0 10px 24px rgba(76, 96, 191, 0.28);
                 }}
-                .header h1 {{ font-size: 32px; margin-bottom: 10px; }}
+                .header h1 {{ font-size: 30px; margin-bottom: 8px; letter-spacing: 0.5px; }}
                 
                 .container {{ 
                     max-width: 1600px; 
-                    margin: 20px auto; 
-                    padding: 0 20px; 
+                    margin: 22px auto;
+                    padding: 0 18px;
                 }}
                 
                 .grid {{ 
                     display: grid; 
-                    grid-template-columns: repeat(auto-fit, minmax(500px, 1fr)); 
-                    gap: 20px; 
-                    margin-bottom: 30px; 
+                    grid-template-columns: repeat(auto-fit, minmax(460px, 1fr));
+                    gap: 16px;
+                    margin-bottom: 18px;
                 }}
                 
                 .card {{ 
                     background: white; 
-                    border-radius: 8px; 
-                    box-shadow: 0 2px 8px rgba(0,0,0,0.1); 
-                    padding: 20px; 
+                    border-radius: 12px;
+                    border: 1px solid #e5e7eb;
+                    box-shadow: 0 4px 14px rgba(15, 23, 42, 0.06);
+                    padding: 18px;
                 }}
                 
                 .card h2 {{ 
-                    font-size: 18px; 
-                    margin-bottom: 15px; 
-                    color: #333; 
-                    border-bottom: 2px solid #667eea; 
-                    padding-bottom: 10px; 
+                    font-size: 17px;
+                    margin-bottom: 12px;
+                    color: #111827;
+                    border-bottom: 1px solid #dbe3ff;
+                    padding-bottom: 8px;
                 }}
                 
                 .card-full {{ grid-column: 1 / -1; }}
-                .chart-container {{ width: 100%; height: 400px; }}
+                .chart-container {{ width: 100%; height: 360px; }}
                 
                 .quality-score {{ 
-                    background: linear-gradient(135deg, #667eea 0%, #764ba2 100%); 
+                    background: linear-gradient(135deg, #5b6ee1 0%, #7a52b3 100%);
                     color: white; 
                     text-align: center; 
-                    padding: 40px; 
-                    border-radius: 8px; 
+                    padding: 30px;
+                    border-radius: 12px;
                 }}
                 
                 .score-value {{ 
-                    font-size: 64px; 
+                    font-size: 58px;
                     font-weight: bold; 
-                    margin: 20px 0; 
+                    margin: 12px 0;
                 }}
                 
                 .score-stats {{ 
@@ -256,8 +282,8 @@ class WebDashboard:
                 }}
                 
                 table {{ width: 100%; border-collapse: collapse; }}
-                th, td {{ padding: 12px; text-align: left; border-bottom: 1px solid #ddd; }}
-                th {{ background: #f5f5f5; font-weight: bold; }}
+                th, td {{ padding: 10px 12px; text-align: left; border-bottom: 1px solid #e5e7eb; }}
+                th {{ background: #f8fafc; font-weight: bold; color: #374151; }}
                 .monitor-meta {{
                     display: flex;
                     justify-content: space-between;
@@ -340,13 +366,12 @@ class WebDashboard:
                     color: #0f172a;
                     word-break: break-word;
                 }}
-                
                 .footer {{ 
                     text-align: center; 
-                    padding: 30px; 
-                    color: #999; 
+                    padding: 24px;
+                    color: #6b7280;
                     font-size: 12px; 
-                    margin-top: 40px; 
+                    margin-top: 24px;
                 }}
             </style>
         </head>
@@ -354,9 +379,25 @@ class WebDashboard:
             <div class="header">
                 <h1>📊 数据治理Web仪表板</h1>
                 <p>电商销售数据治理与分析平台</p>
+                <p>面向对象：{audience}</p>
+                <p>核心问题：{problem}</p>
+                <p>数据来源：{data_source}</p>
+                <p>数据时效性：{timeliness_note}</p>
             </div>
             
             <div class="container">
+                <div class="card card-full" style="margin-bottom: 16px;">
+                    <h2>🧭 数据概览（管理视角）</h2>
+                    <div class="kpi-grid">
+                        <div class="kpi-item"><div>记录总数</div><div class="kpi-value">{self.profile.get('total_records', total_records)}</div></div>
+                        <div class="kpi-item"><div>销售总额</div><div class="kpi-value">{self.profile.get('total_sales', 0):,.0f}</div></div>
+                        <div class="kpi-item"><div>覆盖区域数</div><div class="kpi-value">{self.profile.get('region_count', 0)}</div></div>
+                        <div class="kpi-item"><div>区域类型数</div><div class="kpi-value">{self.profile.get('region_type_count', 0)}</div></div>
+                        <div class="kpi-item"><div>覆盖城市数</div><div class="kpi-value">{self.profile.get('city_count', 0)}</div></div>
+                        <div class="kpi-item"><div>渠道类型数</div><div class="kpi-value">{self.profile.get('channel_count', 0)}</div></div>
+                    </div>
+                </div>
+
                 <!-- 数据质量评分 -->
                 <div class="grid">
                     <div class="card card-full">
@@ -397,8 +438,11 @@ class WebDashboard:
                     </div>
 
                     <div class="card card-full">
-                        <h2>📊 数据完整性分析</h2>
+                        <h2 id="completeness-title">📊 数据完整性分析</h2>
                         <div id="completeness-chart" class="chart-container"></div>
+                        <div id="completeness-summary" class="monitor-note" style="margin-top: 10px;">
+                            完整性阈值与异常字段摘要加载中...
+                        </div>
                     </div>
                     
                     <div class="card">
@@ -414,6 +458,12 @@ class WebDashboard:
                     <div class="card card-full">
                         <h2>📉 销售趋势</h2>
                         <div id="trend-chart" class="chart-container"></div>
+                    </div>
+
+                    <div class="card card-full">
+                        <h2 id="improvement-title">🎯 治理前后对比</h2>
+                        <div id="improvement-chart" class="chart-container"></div>
+                        <div id="improvement-summary" class="monitor-note" style="margin-top: 10px;">治理成效摘要加载中...</div>
                     </div>
                     
                     <div class="card card-full">
@@ -436,6 +486,7 @@ class WebDashboard:
                             </table>
                         </div>
                     </div>
+
                 </div>
             </div>
             
@@ -465,11 +516,27 @@ class WebDashboard:
                         if (d.completeness) {{
                             const c = echarts.init(document.getElementById('completeness-chart'));
                             c.setOption({{
-                                xAxis: {{ type: 'category', data: d.completeness.xAxis }},
+                                xAxis: {{
+                                    type: 'category',
+                                    data: d.completeness.xAxis,
+                                    axisLabel: {{ interval: 0, rotate: 25, fontSize: 11 }}
+                                }},
                                 yAxis: {{ type: 'value', max: 100 }},
                                 series: d.completeness.series,
-                                tooltip: {{ trigger: 'axis' }}
+                                tooltip: {{ trigger: 'axis' }},
+                                grid: {{ left: '56px', right: '24px', top: '28px', bottom: '88px', containLabel: true }}
                             }});
+                            const totalFields = d.completeness.xAxis ? d.completeness.xAxis.length : 0;
+                            const alertCount = d.completeness.alert_field_count || 0;
+                            document.getElementById('completeness-title').textContent =
+                                `📊 数据完整性分析（异常字段：${{alertCount}}/${{totalFields}}）`;
+                            const threshold = d.completeness.threshold || 98;
+                            const values = (d.completeness.yAxis || []).map(v => Number(v));
+                            const fields = d.completeness.xAxis || [];
+                            const badFields = fields.filter((_, idx) => values[idx] < threshold);
+                            const badText = badFields.length ? badFields.join('、') : '无';
+                            document.getElementById('completeness-summary').textContent =
+                                `阈值线：${{threshold}}%；低于阈值字段：${{badFields.length}} 个（${{badText}}）。`;
                         }}
                         if (d.region_sales) {{
                             const c = echarts.init(document.getElementById('region-chart'));
@@ -497,6 +564,20 @@ class WebDashboard:
                                 tooltip: {{ trigger: 'axis' }},
                                 grid: {{ left: '60px', right: '40px', top: '20px', bottom: '80px' }}
                             }});
+                        }}
+                        if (d.governance_improvement) {{
+                            const c = echarts.init(document.getElementById('improvement-chart'));
+                            c.setOption({{
+                                tooltip: {{ trigger: 'axis' }},
+                                legend: {{ data: ['治理前', '治理后'] }},
+                                xAxis: {{ type: 'category', data: d.governance_improvement.xAxis }},
+                                yAxis: {{ type: 'value' }},
+                                series: d.governance_improvement.series,
+                                grid: {{ left: '56px', right: '24px', top: '36px', bottom: '52px', containLabel: true }}
+                            }});
+                            const detail = d.governance_improvement.detail || {{}};
+                            document.getElementById('improvement-summary').textContent =
+                                `质量评分：${{detail.before_score}} -> ${{detail.after_score}}（+${{detail.improved_score}}，${{detail.improved_rate}}%）；问题数量：${{detail.before_issues}} -> ${{detail.after_issues}}（下降${{detail.issue_reduction_rate}}%）；加权风险分：${{detail.before_risk}} -> ${{detail.after_risk}}（下降${{detail.risk_reduction_rate}}%）；高风险问题：${{detail.before_high_risk_issues}} -> ${{detail.after_high_risk_issues}}（下降${{detail.high_risk_reduction_rate}}%）。`;
                         }}
                     }});
                 

@@ -18,22 +18,18 @@ from src.data_governance.kpi import GovernanceKPI
 from src.visualization.charts import ChartGenerator
 from src.visualization.governance_flow import GovernanceFlow
 from src.visualization.web_dashboard import WebDashboard
+from main import build_governance_before_after
+import pandas as pd
 
 
-def load_static_reports():
-    """加载 main.py 生成的静态报告，用于 Web 页整合展示"""
-    reports = {}
-    file_map = {
-        'quality_report.json': 'reports/quality_report.json',
-        'kpi_report.json': 'reports/kpi_report.json',
-        'metadata.json': 'reports/metadata.json',
-        'executive_summary.json': 'reports/executive_summary.json',
+def build_static_reports(quality_report, kpi_report, metadata_registry, executive_summary):
+    """构建静态报告快照（直接由当前Web会话生成）"""
+    return {
+        'quality_report.json': quality_report,
+        'kpi_report.json': kpi_report,
+        'metadata.json': metadata_registry,
+        'executive_summary.json': executive_summary,
     }
-    for name, path in file_map.items():
-        if os.path.exists(path):
-            with open(path, 'r', encoding='utf-8') as f:
-                reports[name] = json.load(f)
-    return reports
 
 
 def main():
@@ -76,8 +72,20 @@ def main():
             'region_sales': chart_gen.generate_sales_by_region(sales_data),
             'channel_analysis': chart_gen.generate_channel_comparison(sales_data),
             'sales_trend': chart_gen.generate_sales_trend(sales_data),
+            'governance_improvement': build_governance_before_after(sales_data),
         }
         print(f"[OK] 已生成 {len(charts)} 张图表")
+
+        display_quality_report = dict(quality_report)
+        before_report_for_display = charts.get('governance_improvement', {}).get('before_report', {})
+        if before_report_for_display:
+            display_quality_report['issues'] = before_report_for_display.get('issues', [])
+            display_quality_report['overall_quality_score'] = before_report_for_display.get(
+                'overall_quality_score', display_quality_report.get('overall_quality_score', 0.0)
+            )
+            display_quality_report['total_records'] = before_report_for_display.get(
+                'total_records', display_quality_report.get('total_records', 0)
+            )
 
         # 5. 生成KPI
         print("[5/6] 计算KPI指标...")
@@ -91,18 +99,48 @@ def main():
         governance_flow = flow.generate_governance_flow_diagram()
         print("[OK] 治理流程已生成")
 
+        profile = {
+            'total_records': int(len(sales_data)),
+            'total_sales': float(sales_data['sales_amount'].sum()) if 'sales_amount' in sales_data.columns else 0.0,
+            'region_count': int(sales_data['region'].nunique()) if 'region' in sales_data.columns else 0,
+            'region_type_count': int(sales_data['region_type'].nunique()) if 'region_type' in sales_data.columns else int(sales_data['region'].nunique()) if 'region' in sales_data.columns else 0,
+            'city_count': int(sales_data['city'].nunique()) if 'city' in sales_data.columns else 0,
+            'channel_count': int(sales_data['channel'].nunique()) if 'channel' in sales_data.columns else 0,
+            'date_start': str(pd.to_datetime(sales_data['order_date'], errors='coerce').min().date()) if 'order_date' in sales_data.columns else '-',
+            'date_end': str(pd.to_datetime(sales_data['order_date'], errors='coerce').max().date()) if 'order_date' in sales_data.columns else '-',
+        }
+        business_context = {
+            'audience': '数据治理负责人、运营经理、数据分析师',
+            'problem': '解决交易数据缺失/重复导致的报表不可信问题，并量化治理成效',
+            'data_source': source_name.replace('Superstore Sales（区域+渠道维度丰富）', 'Superstore 销售公开数据集').replace('Supermarket Sales（含渠道字段）', '超市销售公开数据集').replace('UCI Online Retail', 'UCI 在线零售数据集'),
+            'timeliness_note': '当前为公开历史样例数据（便于复现实验），系统支持替换为近一年业务数据进行同口径治理分析',
+        }
+        executive_summary = {
+            'data_source': business_context['data_source'],
+            'timeliness_note': business_context['timeliness_note'],
+            'profile': profile,
+            'quality_score': display_quality_report['overall_quality_score'],
+            'issue_count': len(display_quality_report.get('issues', [])),
+            'governance_improvement': charts.get('governance_improvement', {}).get('detail', {}),
+        }
+
         # 启动Web仪表板
         print("\n" + "=" * 70)
         print("[OK] 所有数据已准备就绪！")
         print("=" * 70)
 
         dashboard = WebDashboard('DataGovernancePlatform')
-        static_reports = load_static_reports()
-        if static_reports:
-            print(f"[OK] 已加载 {len(static_reports)} 份静态报告用于整合展示")
-        else:
-            print("[提示] 未检测到静态报告文件，将仅展示实时结果")
-        dashboard.set_data(quality_report, kpi_report, charts, governance_flow, static_reports=static_reports)
+        static_reports = build_static_reports(quality_report, kpi_report, metadata_mgr.metadata_registry, executive_summary)
+        print(f"[OK] 已整合 {len(static_reports)} 份静态结果到Web展示")
+        dashboard.set_data(
+            display_quality_report,
+            kpi_report,
+            charts,
+            governance_flow,
+            static_reports=static_reports,
+            business_context=business_context,
+            profile=profile
+        )
 
         print("\nWeb仪表板启动中...")
         print("访问地址：http://127.0.0.1:5000")

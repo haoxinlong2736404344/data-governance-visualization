@@ -46,17 +46,32 @@ class ChartGenerator:
             dict: 完整性图表配置
         """
         completeness_data = quality_report['completeness_metrics']
+        threshold = 98.0
+        completeness_values = [m['completeness'] * 100 for m in completeness_data.values()]
+        alert_field_count = sum(1 for v in completeness_values if v < threshold)
         
         chart = {
             'type': 'bar',
             'title': '数据完整性分析',
             'xAxis': list(completeness_data.keys()),
-            'yAxis': [m['completeness'] * 100 for m in completeness_data.values()],
+            'yAxis': completeness_values,
+            'threshold': threshold,
+            'alert_field_count': alert_field_count,
             'series': [{
                 'name': '完整性(%)',
-                'data': [m['completeness'] * 100 for m in completeness_data.values()],
+                'data': [
+                    {
+                        'value': v,
+                        'itemStyle': {'color': '#ef4444'} if v < threshold else {'color': '#5470C6'}
+                    } for v in completeness_values
+                ],
                 'type': 'bar',
-                'itemStyle': {'color': '#5470C6'}
+                'markLine': {
+                    'symbol': 'none',
+                    'lineStyle': {'type': 'dashed', 'color': '#f59e0b'},
+                    'label': {'formatter': f'阈值线 {threshold:.0f}%'},
+                    'data': [{'yAxis': threshold}]
+                }
             }]
         }
         return chart

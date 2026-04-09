@@ -30,14 +30,21 @@ def build_governance_before_after(raw_df):
     # 阶段A：模拟原始导入快照，注入典型脏数据用于展示治理价值
     before_df = raw_df.copy()
     if len(before_df) > 0:
-        sample_missing = before_df.sample(frac=0.02, random_state=42).index
-        sample_amount_noise = before_df.sample(frac=0.03, random_state=7).index
+        sample_missing = before_df.sample(frac=0.06, random_state=42).index
+        sample_amount_noise = before_df.sample(frac=0.08, random_state=7).index
+        sample_bad_quantity = before_df.sample(frac=0.04, random_state=11).index
+        sample_bad_date = before_df.sample(frac=0.03, random_state=13).index
         if 'unit_price' in before_df.columns:
             before_df.loc[sample_missing, 'unit_price'] = pd.NA
         if {'quantity', 'unit_price', 'sales_amount'}.issubset(before_df.columns):
             before_df.loc[sample_amount_noise, 'sales_amount'] = (
                 before_df.loc[sample_amount_noise, 'sales_amount'] * 1.15
             )
+        if 'quantity' in before_df.columns:
+            before_df.loc[sample_bad_quantity, 'quantity'] = -1
+        if 'order_date' in before_df.columns:
+            before_df['order_date'] = before_df['order_date'].astype(str)
+            before_df.loc[sample_bad_date, 'order_date'] = 'invalid-date'
     before_report = DataQualityValidator(before_df).generate_quality_report()
 
     # 阶段B：治理修复
@@ -56,6 +63,9 @@ def build_governance_before_after(raw_df):
             pd.to_numeric(governed_df['quantity'], errors='coerce')
             * pd.to_numeric(governed_df['unit_price'], errors='coerce')
         )
+    if 'order_date' in governed_df.columns:
+        governed_df['order_date'] = pd.to_datetime(governed_df['order_date'], errors='coerce')
+        governed_df = governed_df[governed_df['order_date'].notna()]
 
     after_report = DataQualityValidator(governed_df).generate_quality_report()
 
@@ -66,9 +76,23 @@ def build_governance_before_after(raw_df):
     improved_score = round(after_score - before_score, 2)
     improved_rate = round((improved_score / before_score * 100), 2) if before_score else 0.0
     issue_reduction_rate = round(((before_issues - after_issues) / before_issues * 100), 2) if before_issues else 0.0
+    severity_weights = {'高': 5, '中': 3, '低': 1}
+
+    def _risk_score(report):
+        return int(sum(severity_weights.get(i.get('severity', '低'), 1) for i in report.get('issues', [])))
+
+    def _high_count(report):
+        return int(sum(1 for i in report.get('issues', []) if i.get('severity') == '高'))
+
+    before_risk = _risk_score(before_report)
+    after_risk = _risk_score(after_report)
+    risk_reduction_rate = round(((before_risk - after_risk) / before_risk * 100), 2) if before_risk else 0.0
+    before_high = _high_count(before_report)
+    after_high = _high_count(after_report)
+    high_reduction_rate = round(((before_high - after_high) / before_high * 100), 2) if before_high else 0.0
 
     return {
-        'xAxis': ['数据质量评分', '问题数量'],
+        'xAxis': ['数据质量评分', '问题数量', '加权风险分'],
         'series': [
             {
                 'name': '治理前',
@@ -76,6 +100,7 @@ def build_governance_before_after(raw_df):
                 'data': [
                     before_score,
                     before_issues,
+                    before_risk,
                 ],
                 'itemStyle': {'color': '#f56c6c'},
             },
@@ -85,10 +110,21 @@ def build_governance_before_after(raw_df):
                 'data': [
                     after_score,
                     after_issues,
+                    after_risk,
                 ],
                 'itemStyle': {'color': '#67c23a'},
             },
         ],
+        'before_report': {
+            'overall_quality_score': before_report.get('overall_quality_score', 0.0),
+            'total_records': before_report.get('total_records', 0),
+            'issues': before_report.get('issues', []),
+        },
+        'after_report': {
+            'overall_quality_score': after_report.get('overall_quality_score', 0.0),
+            'total_records': after_report.get('total_records', 0),
+            'issues': after_report.get('issues', []),
+        },
         'detail': {
             'before_score': before_score,
             'after_score': after_score,
@@ -97,11 +133,17 @@ def build_governance_before_after(raw_df):
             'improved_score': improved_score,
             'improved_rate': improved_rate,
             'issue_reduction_rate': issue_reduction_rate,
+            'before_risk': before_risk,
+            'after_risk': after_risk,
+            'risk_reduction_rate': risk_reduction_rate,
+            'before_high_risk_issues': before_high,
+            'after_high_risk_issues': after_high,
+            'high_risk_reduction_rate': high_reduction_rate,
             'actions': [
                 '原始快照含导入异常（空值与金额偏差）用于治理流程验证',
                 '缺失单价用中位数填补，降低关键字段空值风险',
                 '销售额按数量*单价重算，修复金额不一致问题',
-                '剔除非正数量记录，提升统计口径一致性',
+                '剔除非正数量与非法日期记录，提升统计口径一致性',
             ],
         }
     }
@@ -136,38 +178,38 @@ def generate_html_report(
         <title>数据治理与可视化仪表板</title>
         <script src="https://cdn.jsdelivr.net/npm/echarts@5/dist/echarts.min.js"></script>
         <style>
-            * {{ margin: 0; padding: 0; }}
-            body {{ font-family: 'Microsoft YaHei', Arial, sans-serif; background: #f5f5f5; }}
-            .header {{ background: linear-gradient(135deg, #667eea 0%, #764ba2 100%); 
-                       color: white; padding: 40px; text-align: center; }}
-            .header h1 {{ font-size: 32px; margin-bottom: 10px; }}
-            .header p {{ font-size: 14px; opacity: 0.9; }}
-            .container {{ max-width: 1400px; margin: 20px auto; padding: 0 20px; }}
-            .grid {{ display: grid; grid-template-columns: repeat(auto-fit, minmax(500px, 1fr)); 
-                    gap: 20px; margin-bottom: 30px; }}
-            .card {{ background: white; border-radius: 8px; box-shadow: 0 2px 8px rgba(0,0,0,0.1); 
-                    padding: 20px; }}
-            .card h2 {{ font-size: 18px; margin-bottom: 15px; color: #333; 
-                       border-bottom: 2px solid #667eea; padding-bottom: 10px; }}
+            * {{ margin: 0; padding: 0; box-sizing: border-box; }}
+            body {{ font-family: 'Microsoft YaHei', Arial, sans-serif; background: #f3f6fb; color: #1f2937; line-height: 1.5; }}
+            .header {{ background: linear-gradient(135deg, #5b6ee1 0%, #7a52b3 100%);
+                       color: white; padding: 34px 24px; text-align: center; box-shadow: 0 10px 24px rgba(76, 96, 191, 0.28); }}
+            .header h1 {{ font-size: 30px; margin-bottom: 8px; letter-spacing: 0.5px; }}
+            .header p {{ font-size: 14px; opacity: 0.95; margin: 2px 0; }}
+            .container {{ max-width: 1520px; margin: 22px auto; padding: 0 18px; }}
+            .grid {{ display: grid; grid-template-columns: repeat(auto-fit, minmax(460px, 1fr));
+                    gap: 16px; margin-bottom: 18px; }}
+            .card {{ background: white; border-radius: 12px; border: 1px solid #e5e7eb;
+                    box-shadow: 0 4px 14px rgba(15, 23, 42, 0.06); padding: 18px; }}
+            .card h2 {{ font-size: 17px; margin-bottom: 12px; color: #111827;
+                       border-bottom: 1px solid #dbe3ff; padding-bottom: 8px; }}
             .card-full {{ grid-column: 1 / -1; }}
-            .chart-container {{ width: 100%; height: 400px; }}
-            .quality-score {{ background: linear-gradient(135deg, #667eea 0%, #764ba2 100%); 
-                            color: white; text-align: center; padding: 40px; border-radius: 8px; }}
-            .score-value {{ font-size: 64px; font-weight: bold; margin: 20px 0; }}
-            .score-label {{ font-size: 16px; opacity: 0.9; }}
+            .chart-container {{ width: 100%; height: 360px; }}
+            .quality-score {{ background: linear-gradient(135deg, #5b6ee1 0%, #7a52b3 100%);
+                            color: white; text-align: center; padding: 30px; border-radius: 12px; }}
+            .score-value {{ font-size: 58px; font-weight: bold; margin: 12px 0; }}
+            .score-label {{ font-size: 15px; opacity: 0.92; }}
             .score-stats {{ margin-top: 20px; font-size: 14px; display: flex; 
                            justify-content: space-around; }}
             table {{ width: 100%; border-collapse: collapse; }}
-            th, td {{ padding: 12px; text-align: left; border-bottom: 1px solid #ddd; }}
-            th {{ background: #f5f5f5; font-weight: bold; color: #333; }}
-            tr:hover {{ background: #f9f9f9; }}
+            th, td {{ padding: 10px 12px; text-align: left; border-bottom: 1px solid #e5e7eb; }}
+            th {{ background: #f8fafc; font-weight: bold; color: #374151; }}
+            tr:hover {{ background: #f8fbff; }}
             .severity-高 {{ color: #f56c6c; font-weight: bold; }}
             .severity-中 {{ color: #e6a23c; font-weight: bold; }}
             .severity-低 {{ color: #67c23a; font-weight: bold; }}
-            .footer {{ text-align: center; padding: 30px; color: #999; font-size: 12px; 
-                      border-top: 1px solid #ddd; margin-top: 40px; }}
-            .message {{ background: #f0f9ff; border-left: 4px solid #667eea; 
-                       padding: 15px; margin: 10px 0; border-radius: 4px; }}
+            .footer {{ text-align: center; padding: 24px; color: #6b7280; font-size: 12px;
+                      border-top: 1px solid #e5e7eb; margin-top: 24px; }}
+            .message {{ background: #eef5ff; border-left: 4px solid #5b6ee1;
+                       padding: 12px 14px; margin: 8px 0; border-radius: 8px; }}
             .improvement-summary {{ background: #f8fbff; border: 1px solid #dbeafe; border-radius: 8px;
                                    padding: 14px; margin-top: 14px; }}
             .improvement-summary p {{ margin: 6px 0; color: #1f2937; }}
@@ -259,7 +301,7 @@ def generate_html_report(
             <!-- 图表区域 -->
             <div class="grid">
                 <div class="card card-full">
-                    <h2>📊 数据完整性分析</h2>
+                    <h2 id="completeness-title">📊 数据完整性分析</h2>
                     <div id="completeness-chart" class="chart-container"></div>
                 </div>
                 
@@ -353,11 +395,21 @@ def generate_html_report(
                 const completenessChart = echarts.init(document.getElementById('completeness-chart'));
                 completenessChart.setOption({{
                     title: {{ text: '' }},
-                    xAxis: {{ type: 'category', data: charts.completeness.xAxis }},
+                    xAxis: {{
+                        type: 'category',
+                        data: charts.completeness.xAxis,
+                        axisLabel: {{ interval: 0, rotate: 25, fontSize: 11 }}
+                    }},
                     yAxis: {{ type: 'value', max: 100 }},
                     series: charts.completeness.series,
-                    tooltip: {{ trigger: 'axis' }}
+                    tooltip: {{ trigger: 'axis' }},
+                    grid: {{ left: '56px', right: '24px', top: '28px', bottom: '88px', containLabel: true }}
                 }});
+                if (typeof charts.completeness.alert_field_count !== 'undefined') {{
+                    const totalFields = charts.completeness.xAxis ? charts.completeness.xAxis.length : 0;
+                    document.getElementById('completeness-title').textContent =
+                        `📊 数据完整性分析（异常字段：${{charts.completeness.alert_field_count}}/${{totalFields}}）`;
+                }}
                 
                 // 区域销售图
                 const regionChart = echarts.init(document.getElementById('region-chart'));
@@ -435,6 +487,8 @@ def generate_html_report(
                         <div class="status-badge ${{statusClass}}">治理状态：${{statusText}}</div>
                         <p><strong>质量评分提升：</strong>${{detail.before_score}} -> ${{detail.after_score}}（+${{detail.improved_score}}，${{detail.improved_rate}}%）</p>
                         <p><strong>问题数量变化：</strong>${{detail.before_issues}} -> ${{detail.after_issues}}（下降 ${{detail.issue_reduction_rate}}%）</p>
+                        <p><strong>加权风险分：</strong>${{detail.before_risk}} -> ${{detail.after_risk}}（下降 ${{detail.risk_reduction_rate}}%）</p>
+                        <p><strong>高风险问题：</strong>${{detail.before_high_risk_issues}} -> ${{detail.after_high_risk_issues}}（下降 ${{detail.high_risk_reduction_rate}}%）</p>
                         <p><strong>已执行治理动作：</strong></p>
                         <ul>${{actions}}</ul>
                         <p><strong>管理结论：</strong>${{managerAdvice}}</p>
@@ -590,6 +644,18 @@ def main():
         'governance_improvement': build_governance_before_after(sales_data),
     }
     print(f"[OK] 已生成 {len(charts)} 张可视化图表")
+
+    # 展示口径：按“注入异常后的治理前问题数”作为实际监控问题数
+    display_quality_report = dict(quality_report)
+    before_report_for_display = charts.get('governance_improvement', {}).get('before_report', {})
+    if before_report_for_display:
+        display_quality_report['issues'] = before_report_for_display.get('issues', [])
+        display_quality_report['overall_quality_score'] = before_report_for_display.get(
+            'overall_quality_score', display_quality_report.get('overall_quality_score', 0.0)
+        )
+        display_quality_report['total_records'] = before_report_for_display.get(
+            'total_records', display_quality_report.get('total_records', 0)
+        )
     
     # 5. 生成报告
     print("\n[步骤5] 生成综合报告...")
@@ -597,7 +663,7 @@ def main():
     
     # 保存质量报告
     with open('reports/quality_report.json', 'w', encoding='utf-8') as f:
-        json.dump(quality_report, f, ensure_ascii=False, indent=2, default=str)
+        json.dump(display_quality_report, f, ensure_ascii=False, indent=2, default=str)
 
     # 6. 计算治理KPI指标
     print("\n[步骤6] 计算KPI指标中...")
@@ -636,13 +702,13 @@ def main():
         'data_source': business_context['data_source'],
         'timeliness_note': business_context['timeliness_note'],
         'profile': profile,
-        'quality_score': quality_report['overall_quality_score'],
-        'issue_count': len(quality_report.get('issues', [])),
+        'quality_score': display_quality_report['overall_quality_score'],
+        'issue_count': len(display_quality_report.get('issues', [])),
         'governance_improvement': charts.get('governance_improvement', {}).get('detail', {}),
     }
 
     html_content = generate_html_report(
-        quality_report,
+        display_quality_report,
         charts,
         business_context=business_context,
         profile=profile,
