@@ -44,6 +44,7 @@ pip install -r requirements.txt
 ### 4. 运行程序
 ```bash
 python main.py
+python run_web_dashboard.py
 ```
 
 > 程序会优先使用真实公开数据；若未检测到数据文件，会自动回退为模拟数据。
