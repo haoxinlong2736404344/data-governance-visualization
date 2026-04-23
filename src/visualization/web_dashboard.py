@@ -93,10 +93,20 @@ class WebDashboard:
             percent_match = re.search(r'(\d+(\.\d+)?)%', desc)
             fail_rate = (float(percent_match.group(1)) / 100.0) if percent_match else 0.0
             fail_count = int(round(fail_rate * total)) if fail_rate > 0 else 0
-
+            '''
             if '缺失' in issue_type:
                 rule = '缺失率阈值'
                 threshold = '<= 2%'
+            elif '重复' in issue_type:
+                rule = '重复率阈值'
+                threshold = '<= 30%'
+            else:
+                rule = issue_type
+                threshold = '失败率 <= 2%'
+            '''
+            if '缺失' in issue_type:
+                rule = '缺失率阈值'
+                threshold = '<= 5%'  # 修改点：与后台的 5% 对齐
             elif '重复' in issue_type:
                 rule = '重复率阈值'
                 threshold = '<= 30%'
