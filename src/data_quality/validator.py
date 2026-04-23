@@ -140,7 +140,7 @@ class DataQualityValidator:
             list: 发现的问题列表
         """
         issues = []
-        
+        '''
         # 检查缺失数据过多
         for col, metrics in completeness.items():
             if metrics['missing_rate'] > 0.05:  # 缺失率超过5%
@@ -159,6 +159,30 @@ class DataQualityValidator:
                     'issue_type': '重复数据',
                     'severity': '中',
                     'description': f'{col}列重复率达{metrics["duplicate_rate"]*100:.2f}%'
+                })
+        '''
+        # 检查缺失数据过多
+        for col, metrics in completeness.items():
+            if metrics['missing_rate'] > 0.05:  # 缺失率超过5%触发报警
+                # 动态判断：5%~15%为中等预警，超过15%为严重异常
+                dynamic_severity = '中' if metrics['missing_rate'] <= 0.15 else '高'
+                issues.append({
+                    'column': col,
+                    'issue_type': '缺失数据过多',
+                    'severity': dynamic_severity,
+                    'description': f'{col}列缺失率达{metrics["missing_rate"] * 100:.2f}%'
+                })
+
+        # 检查重复数据过多
+        for col, metrics in uniqueness.items():
+            if metrics['duplicate_rate'] > 0.3:  # 重复率超过30%触发报警
+                # 动态判断：30%~50%为中等预警，超过50%为严重异常
+                dynamic_severity = '中' if metrics['duplicate_rate'] <= 0.5 else '高'
+                issues.append({
+                    'column': col,
+                    'issue_type': '重复数据',
+                    'severity': dynamic_severity,
+                    'description': f'{col}列重复率达{metrics["duplicate_rate"] * 100:.2f}%'
                 })
 
         rule_checks = validity.get('rule_checks', {})

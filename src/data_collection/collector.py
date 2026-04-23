@@ -20,15 +20,7 @@ class DataCollector:
         self.collected_data = None
         
     def generate_sample_sales_data(self, rows=1000):
-        """
-        生成样本销售数据
-        
-        Args:
-            rows (int): 生成的数据行数，默认1000条
-            
-        Returns:
-            pd.DataFrame: 生成的销售数据框
-        """
+
         np.random.seed(42)
         
         data = {
