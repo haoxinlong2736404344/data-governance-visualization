@@ -114,6 +114,7 @@ class WebDashboard:
                 rule = issue_type
                 threshold = '失败率 <= 2%'
 
+
             # 保留原始严重程度映射，避免状态和问题清单冲突
             severity = issue.get('severity', '低')
             if severity == '高':
